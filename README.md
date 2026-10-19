@@ -173,7 +173,7 @@ The agent can drive the same actions from chat with its 24 tools: vote and label
 
 | Client | Start it | Notes |
 |---|---|---|
-| **Browser** | `just combos local`, or `just browser start [device]` | Vue 3 and Vite behind a hub that holds the token. News on the left in the order it arrived, with a search box, a tab per search or timeline, and a rail of publish time, H/F/S icon and keyword beside each card. The agent on the right. The top bar sets the schedule and the cards per sweep and shows total spend. Executions shows every sweep and chat with its tool calls, subagents, timings, tokens and cost |
+| **Browser** | `just combos local`, or `just browser start [device]` | Vue 3 and Vite behind a hub that holds the token. News on the left, newest published first by default. Sort by publication date or date added, in either direction, across news, search and timeline tabs. Unread cards have an accent border and badge; clicking anywhere in a card marks it viewed. Reading state and sorting are saved in this browser for each device. A rail of publish time, H/F/S icon and keyword sits beside each card. The agent is on the right. The top bar sets the schedule and the cards per sweep and shows total spend. Executions shows every sweep and chat with its tool calls, subagents, timings, tokens and cost |
 | **TUI** | `just tui attach [device]` | pi-tui with slash commands (`/feed`, `/more 3`, `/label 3 signal facts`, `/runs`, `/tools`). Plain text goes to the agent |
 | **CLI** | `just cli run <command>` | `dna status`, `dna feed`, `dna send "..."`, `dna watch`, `dna doctor`. Every command has `--json` |
 

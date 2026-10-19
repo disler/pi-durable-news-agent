@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// A search, keyword or url tab: the same search the agent's open_tab runs, in arrival order like News.
+// A search, keyword or url tab uses the same sorting and reading state as News.
 // Votes update through the feed model; new news reruns the search.
 import { computed, shallowRef, watch } from "vue";
 import type { Card, TabBy } from "@dna/sdk";
 import { api, attempt, feed, feedState } from "../client/store";
-import BottomPane from "./BottomPane.vue";
+import { reading, sortCards } from "../client/feed-preferences";
+import FeedPane from "./FeedPane.vue";
 import FeedRow from "./FeedRow.vue";
 import LoadingRows from "./LoadingRows.vue";
 
@@ -25,16 +26,19 @@ watch(
   },
 );
 const cards = computed(() =>
-  (feedState.value, found.value ?? [])
-    .map((c) => feed.card(c.id) ?? c)
-    .filter((c) => !c.hiddenFromFeed)
-    .sort((a, b) => a.id - b.id),
+  sortCards(
+    (feedState.value, found.value ?? [])
+      .map((c) => feed.card(c.id) ?? c)
+      .filter((c) => !c.hiddenFromFeed),
+  ),
 );
 </script>
 
 <template>
-  <BottomPane
+  <FeedPane
+    :key="`${reading.sortBy}-${reading.direction}`"
     :count="cards.length"
+    :newest-first="reading.direction === 'desc'"
     label="Search"
     class="feed-list"
     :data-search="`${by}-${value}`"
@@ -48,5 +52,5 @@ const cards = computed(() =>
       <p v-if="!cards.length" class="empty">No news {{ WHAT[by] }} "{{ value }}" yet.</p>
       <FeedRow v-for="card in cards" :key="card.id" :card="card" />
     </template>
-  </BottomPane>
+  </FeedPane>
 </template>

@@ -5,6 +5,7 @@ import { computed, ref } from "vue";
 import { ExternalLink, GitCommitVertical, ImageOff, Info, MessageSquareQuote } from "@lucide/vue";
 import { ago, type Card } from "@dna/sdk";
 import { openTimeline } from "../../client/layout";
+import { hasViewed, markViewed } from "../../client/feed-preferences";
 import { clean } from "../../client/text";
 import { now, referenceInChat, ui } from "../../client/store";
 import FeedbackBar from "../FeedbackBar.vue";
@@ -13,6 +14,7 @@ import { cardComponent } from "./registry";
 
 const props = defineProps<{ card: Card }>();
 const body = computed(() => cardComponent(props.card.component));
+const viewed = computed(() => hasViewed(props.card));
 const broken = ref(false);
 const when = computed(() =>
   props.card.publishedAt ? (now.value, ago(props.card.publishedAt)) : "date unknown",
@@ -35,11 +37,17 @@ const image = computed(() =>
 <template>
   <article
     class="card"
-    :class="card.component"
+    :class="[card.component, { unread: !viewed }]"
     :data-card-id="card.id"
     :data-kind="card.kind"
     :data-component="card.component"
+    :data-viewed="viewed"
+    @click.capture="markViewed(card)"
+    @auxclick.capture="markViewed(card)"
   >
+    <span class="card-view-status" :class="{ unread: !viewed }">{{
+      viewed ? "Viewed" : "Unread"
+    }}</span>
     <a
       class="card-media"
       :class="{ skeleton: card.image?.status === 'pending', empty: !image }"

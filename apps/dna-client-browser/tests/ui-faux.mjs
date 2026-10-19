@@ -1,5 +1,5 @@
 // End-to-end check of the browser client: a faux dna-server-api with fixture search, the hub, and headless Chrome.
-// Covers layout, cards and feedback, taste questions, tool rows into executions, the context bar, the model
+// Covers sorting, viewed state, layout, cards and feedback, taste questions, tool rows into executions, the context bar, the model
 // picker, keywords, text hygiene and data-cap coverage. Prints one PASS line per check.
 //   npm run build -w dna-client-browser && node apps/dna-client-browser/tests/ui-faux.mjs   (HEADED=1 to watch)
 import { spawn } from "node:child_process";
@@ -20,13 +20,21 @@ mkdirSync(shots, { recursive: true });
 const tmp = mkdtempSync(join(tmpdir(), "dna-ui-"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const token = () => `dna_${randomBytes(32).toString("base64url")}`;
-const freePort = () =>
-  new Promise((done) => {
-    const s = createServer().listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => done(port));
-    });
-  });
+let nextPort = 8700;
+async function freePort() {
+  while (nextPort <= 8899) {
+    const port = nextPort++;
+    if (
+      await new Promise((done) => {
+        const server = createServer();
+        server.once("error", () => done(false));
+        server.listen(port, "127.0.0.1", () => server.close(() => done(true)));
+      })
+    )
+      return port;
+  }
+  throw new Error("No free test port between 8700 and 8899");
+}
 const children = new Set();
 function run(script, args, env, cwd) {
   const child = spawn(process.execPath, ["--import", "tsx", script, ...args], {
@@ -87,7 +95,7 @@ const hub = run(
   { DNA_API_URL: apiUrl, DNA_CLIENT_TOKEN: tokens.client, DNA_TARGET: "local" },
   app,
 );
-const base = `http://localhost:${hubPort}`;
+const base = `http://127.0.0.1:${hubPort}`;
 await waitHttp(`${base}/hub/healthz`, hub);
 
 const call = async (method, path, body, tok = tokens.client) => {
@@ -121,10 +129,47 @@ fixtureDb
   .prepare("UPDATE story_memberships SET story_id=? WHERE item_id=?")
   .run(storyId, related[1].itemId);
 fixtureDb.prepare("INSERT INTO story_items VALUES (?, ?)").run(storyId, related[1].itemId);
+// Different publication dates (plus one undated story) distinguish date sorting from arrival-ID sorting.
+const fixtureNow = Date.now();
+for (const [index, card] of fixtureCards.entries()) {
+  const hoursAgo = card.id === related[0].id ? 3 : card.id === related[1].id ? 1 : 2;
+  fixtureDb
+    .prepare("UPDATE items SET published_at=? WHERE id=?")
+    .run(
+      index === fixtureCards.length - 1
+        ? null
+        : new Date(fixtureNow - hoursAgo * 3_600_000).toISOString(),
+      card.itemId,
+    );
+}
 fixtureDb.exec("COMMIT");
 fixtureDb.close();
 
-const browser = await chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
+// An isolated, offline preview for browser-tool verification when the host blocks headless Chrome.
+if (process.env.DNA_UI_PREVIEW === "1") {
+  console.log(`Fixture preview ready: ${base}`);
+  try {
+    await new Promise((done) => {
+      process.once("SIGINT", done);
+      process.once("SIGTERM", done);
+    });
+  } finally {
+    for (const child of children) child.kill("SIGTERM");
+    await sleep(300);
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  process.exit(0);
+}
+
+let browser;
+try {
+  browser = await chromium.launch({ channel: "chrome", headless: !process.env.HEADED });
+} catch (error) {
+  for (const child of children) child.kill("SIGTERM");
+  await sleep(300);
+  rmSync(tmp, { recursive: true, force: true });
+  throw error;
+}
 const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
 await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
 const errors = [];
@@ -195,15 +240,139 @@ try {
         (await news.first().locator('a[aria-label="Open the source"]').getAttribute("href")),
     "the card image opens the source in a new tab",
   );
-  const ids = await news.evaluateAll((els) =>
-    els.map((e) => Number(e.getAttribute("data-card-id"))),
-  );
+  const newsIds = () => news.evaluateAll((els) => els.map((e) => Number(e.dataset.cardId)));
+  const visibleCards = (await call("GET", "/v1/feed?limit=1000")).items;
+  const expectedIds = (by, direction) =>
+    [...visibleCards]
+      .sort((a, b) => {
+        const x = Date.parse(a[by]);
+        const y = Date.parse(b[by]);
+        if (!Number.isFinite(x) && Number.isFinite(y)) return 1;
+        if (!Number.isFinite(y) && Number.isFinite(x)) return -1;
+        const delta = (Number.isFinite(x) ? x : 0) - (Number.isFinite(y) ? y : 0);
+        return (
+          direction * (delta || Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.id - b.id)
+        );
+      })
+      .map((c) => c.id);
+  const ids = await newsIds();
   const boxes = await news.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().top));
   check(
-    ids.every((id, i) => i === 0 || id > ids[i - 1]) &&
+    ids.join() === expectedIds("publishedAt", -1).join() &&
       boxes.every((y, i) => i === 0 || y > boxes[i - 1]),
-    "news runs in arrival order, the newest card last and lowest",
+    "news defaults to newest publication first at the top",
   );
+  check(
+    visibleCards.some((card) => !card.publishedAt) &&
+      !visibleCards.find((card) => card.id === ids.at(-1))?.publishedAt,
+    "undated records follow dated news when newest comes first",
+  );
+  check(
+    (await page.locator(".feed-list .bottom-scroll").evaluate((el) => el.scrollTop)) === 0,
+    "the news pane starts at the top instead of pinning to its oldest card",
+  );
+  const sortBy = page.getByLabel("Sort by", { exact: true });
+  const direction = page.getByLabel("Sort direction", { exact: true });
+  await direction.selectOption("asc");
+  check(
+    (await newsIds()).join() === expectedIds("publishedAt", 1).join(),
+    "oldest first reverses publication order",
+  );
+  const oldestFirstIds = await newsIds();
+  check(
+    !visibleCards.find((card) => card.id === oldestFirstIds.at(-1))?.publishedAt,
+    "undated records also stay last when oldest comes first",
+  );
+  await sortBy.selectOption("added");
+  check(
+    (await newsIds()).join() === expectedIds("createdAt", 1).join(),
+    "date added sorts by record arrival",
+  );
+  await page.reload();
+  await news.first().waitFor();
+  check(
+    (await sortBy.inputValue()) === "added" && (await direction.inputValue()) === "asc",
+    "the sort field and direction survive a reload",
+  );
+  await direction.selectOption("desc");
+  check(
+    (await newsIds()).join() === expectedIds("createdAt", -1).join(),
+    "newest first also reverses date added order",
+  );
+  await sortBy.selectOption("published");
+
+  check(
+    (await news.locator(".card-view-status.unread").count()) === newsCount,
+    "unviewed cards have an Unread badge and accent border",
+  );
+  const viewedCard = news.first();
+  const viewedId = await viewedCard.getAttribute("data-card-id");
+  await viewedCard.click({ position: { x: 5, y: 5 } });
+  check(
+    (await viewedCard.getAttribute("data-viewed")) === "true",
+    "clicking blank space in a card marks it viewed",
+  );
+  const detailCard = news.nth(1);
+  await detailCard.getByRole("button", { name: "Card details", exact: true }).click();
+  await page.locator(".card-detail").waitFor();
+  check(
+    (await detailCard.getAttribute("data-viewed")) === "true",
+    "a nested card action marks it viewed and still opens details",
+  );
+  await page.locator(".card-detail").getByRole("button", { name: "Close", exact: true }).click();
+  await page.reload();
+  await news.first().waitFor();
+  check(
+    (await page.locator(`[data-card-id="${viewedId}"]`).getAttribute("data-viewed")) === "true" &&
+      (await news.locator(".card-view-status.unread").count()) === newsCount - 2,
+    "viewed state survives reload without marking the other cards viewed",
+  );
+  await page.screenshot({ path: join(shots, "feed-reading.png") });
+
+  // Restore a hidden card through the real feedback API and SSE stream, so an incoming row exercises
+  // scroll anchoring without depending on a second sweep finding different fixture news.
+  const incomingId = expectedIds("publishedAt", -1)[0];
+  await page.setViewportSize({ width: 1600, height: 400 });
+  for (const order of ["desc", "asc"]) {
+    await direction.selectOption(order);
+    await call("POST", `/v1/cards/${incomingId}/feedback`, { signal: "less" });
+    await page.locator(`.feed-list [data-card-id="${incomingId}"]`).waitFor({ state: "detached" });
+    const scroller = page.locator(".feed-list .bottom-scroll");
+    await scroller.evaluate((el, newestFirst) => {
+      el.scrollTop = newestFirst ? el.scrollHeight - el.clientHeight : 0;
+      el.dispatchEvent(new Event("scroll"));
+    }, order === "desc");
+    const anchor = await scroller.evaluate((el) => {
+      const top = el.getBoundingClientRect().top;
+      const row = [...el.querySelectorAll("[data-row]")].find(
+        (entry) => entry.getBoundingClientRect().bottom > top,
+      );
+      return { id: row.dataset.row, offset: row.getBoundingClientRect().top - top };
+    });
+    await call("POST", `/v1/cards/${incomingId}/feedback`, { signal: "more" });
+    const jump = page.getByRole("button", { name: "1 new, jump to the newest", exact: true });
+    await jump.waitFor();
+    const afterOffset = await scroller.evaluate((el, id) => {
+      const row = el.querySelector(`[data-row="${id}"]`);
+      return row.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    }, anchor.id);
+    check(
+      Math.abs(afterOffset - anchor.offset) < 2,
+      `${order}: a streamed card preserves the visible row while reading away from the newest edge`,
+    );
+    await jump.click();
+    await page.waitForFunction((newestFirst) => {
+      const el = document.querySelector(".feed-list .bottom-scroll");
+      return newestFirst ? el.scrollTop < 2 : el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    }, order === "desc");
+    check(!(await jump.isVisible()), `${order}: the new-items button jumps to the newest edge`);
+  }
+  await direction.selectOption("desc");
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  await page.locator(".feed-list .bottom-scroll").evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
   const ranked = await page.locator('[data-testid="hfs"]').evaluateAll((els) =>
     els.map((el) =>
       [...el.querySelectorAll(".hfs-chip")].map((c) => ({
@@ -246,6 +415,10 @@ try {
     moved.length > 0,
     `Show me more raised a topic weight (${moved.map((k) => k.term).join(", ")})`,
   );
+  check(
+    (await durable.getAttribute("data-viewed")) === "true",
+    "feedback also marks the card viewed",
+  );
   await durable.getByRole("button", { name: "Label Signal" }).click();
   await page.waitForFunction(
     (id) =>
@@ -280,9 +453,17 @@ try {
     (await tab.innerText()).includes("Fixture story progression") &&
       (await page.locator('[data-timeline] [data-cap="timelines.read"]').allInnerTexts())
         .map((t) => t.replace(/\s+/g, " ").trim())
-        .join(" | ") === "Timeline 1/2 | Timeline 2/2",
-    "the chip opens a tab named after the timeline with its cards in order",
+        .join(" | ") === "Timeline 2/2 | Timeline 1/2",
+    "the timeline uses the selected newest-first ordering",
   );
+  await direction.selectOption("asc");
+  check(
+    (await page.locator('[data-timeline] [data-cap="timelines.read"]').allInnerTexts())
+      .map((t) => t.replace(/\s+/g, " ").trim())
+      .join(" | ") === "Timeline 1/2 | Timeline 2/2",
+    "oldest first also reverses the timeline",
+  );
+  await direction.selectOption("desc");
   await page.screenshot({ path: join(shots, "timeline.png") });
   await page.reload();
   await page.locator("[data-timeline] .card").first().waitFor();

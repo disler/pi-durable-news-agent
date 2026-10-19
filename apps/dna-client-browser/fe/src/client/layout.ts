@@ -116,7 +116,7 @@ export function highlight(cardId: number) {
   clearTimeout(highlightTimer);
   highlightTimer = setTimeout(() => (highlighted.value = undefined), 4000);
   const row = () => document.querySelector(`.feed-list [data-row="${cardId}"]`);
-  // After the News list mounts and pins itself to the bottom, then once more if images moved it.
+  // After the News list mounts, then once more if images moved it.
   void nextTick(() =>
     setTimeout(() => row()?.scrollIntoView({ block: "center", behavior: "smooth" }), 120),
   );

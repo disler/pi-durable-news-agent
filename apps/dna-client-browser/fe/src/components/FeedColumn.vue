@@ -4,8 +4,9 @@
 import { computed } from "vue";
 import { GitCommitVertical, Hash, Link, Newspaper, Search, X } from "@lucide/vue";
 import { closeTab, layout, tabKey, type FeedTab } from "../client/layout";
+import { reading, sortCards } from "../client/feed-preferences";
 import { feed, feedState, loaded } from "../client/store";
-import BottomPane from "./BottomPane.vue";
+import FeedPane from "./FeedPane.vue";
 import FeedRow from "./FeedRow.vue";
 import LoadingRows from "./LoadingRows.vue";
 import SearchBox from "./SearchBox.vue";
@@ -19,9 +20,9 @@ const counts = computed(() => {
     if (c.timeline) out.set(c.timeline.id, Math.max(out.get(c.timeline.id) ?? 0, c.timeline.count));
   return out;
 });
-/** News in the order it arrived, the newest card last and lowest; each rail shows when the item was published. */
+/** The reader's selected date and direction, newest published first by default. */
 const news = computed(() =>
-  feedState.value.news.filter((c) => c.feedback?.signal !== "less").sort((a, b) => a.id - b.id),
+  sortCards(feedState.value.news.filter((c) => c.feedback?.signal !== "less")),
 );
 const label = (t: FeedTab) =>
   t.kind === "timeline" ? (feed.timeline(t.id)[0]?.timeline?.title ?? t.title) : t.value;
@@ -68,13 +69,33 @@ const active = computed(() => layout.tabs.find((t) => tabKey(t) === layout.tab))
       </nav>
       <SearchBox />
     </div>
-    <BottomPane v-if="!active" :count="news.length" label="News" class="feed-list">
+    <div class="feed-sort">
+      <label
+        >Sort by
+        <select v-model="reading.sortBy" aria-label="Sort by">
+          <option value="published">Publication date</option>
+          <option value="added">Date added</option>
+        </select>
+      </label>
+      <select v-model="reading.direction" aria-label="Sort direction">
+        <option value="desc">Newest first</option>
+        <option value="asc">Oldest first</option>
+      </select>
+    </div>
+    <FeedPane
+      v-if="!active"
+      :key="`${reading.sortBy}-${reading.direction}`"
+      :count="news.length"
+      :newest-first="reading.direction === 'desc'"
+      label="News"
+      class="feed-list"
+    >
       <LoadingRows v-if="!loaded" kind="cards" :count="3" label="Loading the news" />
       <p v-else-if="!news.length" class="empty">
         Nothing yet. The agent sweeps on its schedule and only presents news worth your attention.
       </p>
       <FeedRow v-for="card in news" :key="card.id" :card="card" />
-    </BottomPane>
+    </FeedPane>
     <TimelineView v-else-if="active.kind === 'timeline'" :id="active.id" :key="layout.tab" />
     <SearchView v-else :by="active.kind" :value="active.value" :key="layout.tab" />
   </section>
