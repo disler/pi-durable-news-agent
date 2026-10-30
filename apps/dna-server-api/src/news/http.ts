@@ -17,6 +17,8 @@ export interface GetOptions {
   allowStatus?: number[];
   /** Statuses that are not retried (a rate limit or block the caller handles itself). */
   noRetryOn?: number[];
+  /** Extra statuses to retry even when they are not retryable by default (a flaky feed). */
+  retryStatuses?: number[];
 }
 
 export interface Http {
@@ -78,7 +80,8 @@ export function liveHttp(log?: Logger): Http {
       {
         attempts: 3,
         retryOn: (error) =>
-          isRetryable(error) &&
+          (isRetryable(error) ||
+            (error instanceof HttpError && (options.retryStatuses?.includes(error.status) ?? false))) &&
           !(error instanceof HttpError && options.noRetryOn?.includes(error.status)),
         baseMs: 800,
         maxMs: 8000,
