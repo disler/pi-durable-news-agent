@@ -40,6 +40,21 @@ function stub(t: TestContext, impl: () => Promise<Response>) {
 }
 const live = () => new JevClient({ provider: "openrouter", apiKey: "dummy-key", retryDelayMs: 0 });
 
+test("TypeSafe translates the OpenRouter Jev alias to its native model ID", async (t) => {
+  let model = "";
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      model = JSON.parse(String(init?.body)).model;
+      return ok(valid);
+    },
+  );
+  const client = new JevClient({ provider: "typesafe", apiKey: "dummy-key" });
+  await client.systemOne({ text: "x" }, questions, { model: "~typesafe/jev-latest" });
+  assert.equal(model, "jev-latest");
+});
+
 test("mock is forced under node:test and answers every question", async () => {
   const client = new JevClient();
   assert.equal(client.provider, "mock");

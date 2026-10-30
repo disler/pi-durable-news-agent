@@ -181,10 +181,12 @@ export class JevClient {
     opts: { model?: string; signal?: AbortSignal } = {},
   ): Promise<SystemOneResult> {
     opts.signal?.throwIfAborted();
-    const requestedModel =
+    let requestedModel =
       opts.model ??
       this.model ??
       (this.provider === "mock" ? this.mock.model : DEFAULT_MODELS[this.provider]);
+    if (this.provider === "typesafe" && requestedModel === "~typesafe/jev-latest")
+      requestedModel = "jev-latest";
     const body: SystemOneRequest = { model: requestedModel, state, questions };
     validateRequest(body);
     let requestText: string;
