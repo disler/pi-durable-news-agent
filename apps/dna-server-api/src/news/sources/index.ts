@@ -48,9 +48,12 @@ export async function fetchSource(
 ): Promise<SourceFetch> {
   const validators = deps.store.sources.validators(source.id);
   try {
+    // A feed that answers 404 is often a cold cache rather than a gone feed (YouTube's
+    // per-channel feeds alternate between 200, 404 and 500), so try again before giving up.
+    const retryStatuses = source.kind === "rss" || source.kind === "atom" ? [404] : undefined;
     const http: Http = {
       ...deps.http,
-      get: (url, options) => deps.http.get(url, { noRetryOn: NO_RETRY, ...options }),
+      get: (url, options) => deps.http.get(url, { noRetryOn: NO_RETRY, retryStatuses, ...options }),
     };
     const result = await FETCHERS[source.kind](source, {
       http,
@@ -105,6 +108,13 @@ export async function fetchSource(
     const status = (error as { status?: number }).status;
     if (status === 429 || status === 403) {
       const reason = status === 429 ? "429 rate limited" : "403 blocked";
+      deps.log?.warn("source.skipped", { sourceId: source.id, source: source.name, reason });
+      return { source, ok: false, status: reason, docs: [], disabled: false };
+    }
+    // 404 on a feed is ambiguous: the feed may be a cold cache (YouTube) rather than gone.
+    // Skip this sweep instead of counting a failure, so a flaky feed is never disabled.
+    if (status === 404 && (source.kind === "rss" || source.kind === "atom")) {
+      const reason = "404 not found (feed skipped, not counted as a failure)";
       deps.log?.warn("source.skipped", { sourceId: source.id, source: source.name, reason });
       return { source, ok: false, status: reason, docs: [], disabled: false };
     }
