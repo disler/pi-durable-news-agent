@@ -1,6 +1,14 @@
-// The model catalog: Haiku 5.5 (default) plus 29 more models, all through OpenRouter.
-// DNA_PROVIDER=faux swaps in a free deterministic model with the same 1M window.
-import { createModels, type MutableModels } from "@earendil-works/pi-ai/models";
+// The model catalog: Haiku 5.5 (default) plus 29 more models, through OpenRouter (default) or a LiteLLM proxy.
+// DNA_PROVIDER=litellm serves the same ids through LITELLM_BASE_URL; DNA_PROVIDER=faux swaps in a free deterministic
+// model with the same 1M window.
+import { envApiKeyAuth, type Api, type Model } from "@earendil-works/pi-ai";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import {
+  createModels,
+  createProvider,
+  type MutableModels,
+  type Provider,
+} from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import type { ModelRef } from "@earendil-works/pi-durable";
 
@@ -75,9 +83,17 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
 ];
 
+/** Where catalog models are served: OpenRouter (default), a LiteLLM proxy, or the free faux model. */
+export type ModelProvider = "openrouter" | "litellm" | "faux";
+
+export interface LiteLLMOptions {
+  /** The proxy's OpenAI-compatible URL, e.g. http://127.0.0.1:4000/v1. */
+  baseUrl: string;
+}
+
 export interface ModelCatalog {
   readonly models: MutableModels;
-  readonly provider: "openrouter" | "faux";
+  readonly provider: ModelProvider;
   readonly defaultModel: ModelRef;
   list(): ModelInfo[];
   /** A catalog id to a pi-durable model reference; throws for ids outside the catalog. */
@@ -86,9 +102,11 @@ export interface ModelCatalog {
 }
 
 export function createModelCatalog(options: {
-  provider: "openrouter" | "faux";
+  provider: ModelProvider;
   installFaux?: (models: MutableModels) => void;
   defaultModel?: string;
+  /** Required when provider is "litellm". */
+  litellm?: LiteLLMOptions;
 }): ModelCatalog {
   const models = createModels();
   if (options.provider === "faux") {
@@ -119,34 +137,87 @@ export function createModelCatalog(options: {
       info: (id) => all.find((m) => m.id === id),
     };
   }
-  const provider = openrouterProvider();
-  models.setProvider(provider);
-  const known = provider.getModels();
+  // pi-ai's built-in OpenRouter catalog is static data: reading it sends no request to OpenRouter.
+  // It supplies each model's window, token limit, reasoning flag and list price for both providers.
+  const openrouter = openrouterProvider();
+  const known = openrouter.getModels();
   const missing = CATALOG.filter((c) => !known.some((m) => m.id === c.id)).map((c) => c.id);
   if (missing.length) throw new Error(`OpenRouter catalog is missing: ${missing.join(", ")}`);
+  const id = options.provider;
+  if (id === "litellm") models.setProvider(liteLLMProvider(options.litellm, known));
+  else models.setProvider(openrouter);
   const list = () =>
     CATALOG.map((c) => {
       const m = known.find((x) => x.id === c.id)!;
       return {
         ...c,
-        provider: "openrouter",
+        provider: id,
         contextWindow: m.contextWindow,
         reasoning: m.reasoning,
         cost: { input: m.cost.input, output: m.cost.output },
       };
     });
   const defaultId = options.defaultModel ?? DEFAULT_MODEL;
-  const ref = (id: string): ModelRef => {
-    if (!CATALOG.some((c) => c.id === id))
-      throw new Error(`Unknown model ${id}. Pick one of the ${CATALOG.length} catalog models.`);
-    return { provider: "openrouter", modelId: id };
+  const ref = (modelId: string): ModelRef => {
+    if (!CATALOG.some((c) => c.id === modelId))
+      throw new Error(`Unknown model ${modelId}. Pick one of the ${CATALOG.length} catalog models.`);
+    return { provider: id, modelId };
   };
   return {
     models,
-    provider: "openrouter",
+    provider: id,
     defaultModel: ref(defaultId),
     list,
     ref,
-    info: (id) => list().find((m) => m.id === id),
+    info: (modelId) => list().find((m) => m.id === modelId),
   };
+}
+
+/**
+ * The catalog served by a LiteLLM proxy over its OpenAI-compatible API. The proxy's model_name for each model is
+ * its catalog id (anthropic/claude-haiku-5.5, ...), so the model picker, saved settings and DNA_MODEL keep working.
+ * LITELLM_API_KEY is sent as the bearer key when set; a proxy without a master key needs none.
+ */
+function liteLLMProvider(
+  options: LiteLLMOptions | undefined,
+  known: readonly Pick<
+    Model<Api>,
+    "id" | "reasoning" | "input" | "cost" | "contextWindow" | "maxTokens"
+  >[],
+): Provider<"openai-completions"> {
+  const baseUrl = options?.baseUrl?.trim().replace(/\/+$/, "");
+  if (!baseUrl)
+    throw new Error(
+      "DNA_PROVIDER=litellm needs LITELLM_BASE_URL, the proxy's OpenAI-compatible URL (e.g. http://127.0.0.1:4000/v1)",
+    );
+  const catalogModels = CATALOG.map((c): Model<"openai-completions"> => {
+    const m = known.find((x) => x.id === c.id)!;
+    return {
+      id: c.id,
+      name: c.name,
+      api: "openai-completions",
+      provider: "litellm",
+      baseUrl,
+      reasoning: m.reasoning,
+      input: m.input,
+      cost: m.cost,
+      contextWindow: m.contextWindow,
+      maxTokens: m.maxTokens,
+      // LiteLLM does not accept OpenAI's `store` field for every backend.
+      compat: { supportsStore: false },
+    };
+  });
+  const keyed = !!process.env.LITELLM_API_KEY?.trim();
+  return createProvider({
+    id: "litellm",
+    name: "LiteLLM",
+    baseUrl,
+    auth: {
+      apiKey: keyed
+        ? envApiKeyAuth("LiteLLM key", ["LITELLM_API_KEY"])
+        : { name: "LiteLLM (no key)", resolve: async () => ({ auth: {} }) },
+    },
+    models: catalogModels,
+    api: openAICompletionsApi(),
+  });
 }

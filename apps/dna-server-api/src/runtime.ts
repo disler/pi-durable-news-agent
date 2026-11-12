@@ -73,6 +73,7 @@ export async function openApp(config: Config, options: { log?: Logger } = {}): P
     provider: config.provider,
     installFaux: (models) => installScriptedFaux(models, fauxRules()),
     defaultModel: config.provider === "faux" ? undefined : config.model,
+    litellm: config.provider === "litellm" ? { baseUrl: config.litellmBaseUrl ?? "" } : undefined,
   });
   const judge = new Judge({
     decide: decideFor(config),

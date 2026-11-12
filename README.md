@@ -27,7 +27,7 @@ The `/install` command checks Node 24 and `just`, installs the workspaces, confi
 
 ### Manual Install
 
-**Prereqs:** [Node 24](https://nodejs.org), [`just`](https://github.com/casey/just), an [OpenRouter](https://openrouter.ai) key. Optional: an [OpenAI](https://platform.openai.com) key for card images when a source has none, a [Firecrawl](https://firecrawl.dev) key for richer page reads, `tmux` for the TUI smoke, Google Chrome for the UI suite.
+**Prereqs:** [Node 24](https://nodejs.org), [`just`](https://github.com/casey/just), an [OpenRouter](https://openrouter.ai) key (or a [LiteLLM](#without-openrouter-litellm) proxy plus a TypeSafe key). Optional: an [OpenAI](https://platform.openai.com) key for card images when a source has none, a [Firecrawl](https://firecrawl.dev) key for richer page reads, `tmux` for the TUI smoke, Google Chrome for the UI suite.
 
 ```bash
 just install                       # npm install for every workspace
@@ -37,6 +37,29 @@ just combos dev                    # free and offline: faux model, fixture news,
 just combos local                  # the real thing on this Mac: API, UI on http://localhost:4851, and the every minute tick
 just net down local                # stop the API, the UI and the tick
 ```
+
+### Without OpenRouter: LiteLLM
+
+OpenRouter is the default. To serve the agents through your own [LiteLLM](https://docs.litellm.ai) proxy instead, set three values in `.env`:
+
+```bash
+DNA_PROVIDER=litellm
+LITELLM_BASE_URL=http://127.0.0.1:4000/v1   # the proxy's OpenAI-compatible URL
+LITELLM_API_KEY=sk-...                      # optional: the proxy's master key or a virtual key
+TYPESAFE_API_KEY=...                        # jev, direct from TypeSafe (leave OPENROUTER_API_KEY empty)
+```
+
+The proxy serves each model under its catalog id as `model_name`, so the model picker, saved settings and `DNA_MODEL` keep working. Map at least `anthropic/claude-haiku-5.5`: it is the default for the agent, the quick model and deep research. For example, in the proxy's `config.yaml`:
+
+```yaml
+model_list:
+  - model_name: anthropic/claude-haiku-5.5
+    litellm_params:
+      model: anthropic/claude-haiku-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+```
+
+The agents call the proxy's Chat Completions API. Context windows, token limits and the prices behind the cost figures come from pi-ai's built-in catalog; reading it sends nothing to OpenRouter. jev is not a chat model, so it does not go through LiteLLM: `TYPESAFE_API_KEY` calls TypeSafe directly. `just cli run doctor` checks the keys for the provider you picked. Use a fresh `DNA_DATA_DIR` when you switch an existing install from one provider to the other, because the agent's saved chat remembers the provider of its model.
 
 ---
 

@@ -20,6 +20,29 @@ test("the catalog defaults to Haiku 5.5 and every id resolves in pi-ai 1.1.0 Ope
   assert.throws(() => catalog.ref("made/up-model"), /Unknown model/);
 });
 
+test("DNA_PROVIDER=litellm serves the same catalog ids through the proxy's Chat Completions API", () => {
+  const catalog = createModelCatalog({
+    provider: "litellm",
+    litellm: { baseUrl: "http://127.0.0.1:4000/v1/" },
+  });
+  assert.equal(catalog.provider, "litellm");
+  assert.deepEqual(catalog.defaultModel, {
+    provider: "litellm",
+    modelId: "anthropic/claude-haiku-5.5",
+  });
+  const list = catalog.list();
+  assert.equal(list.length, 30);
+  assert.equal(list[0].provider, "litellm");
+  assert.equal(list[0].contextWindow, 1_000_000);
+  const model = catalog.models.getModel("litellm", "anthropic/claude-haiku-5.5");
+  assert.ok(model);
+  assert.equal(model.api, "openai-completions");
+  assert.equal(model.baseUrl, "http://127.0.0.1:4000/v1");
+  assert.equal(catalog.models.getModel("openrouter", "anthropic/claude-haiku-5.5"), undefined);
+  assert.throws(() => catalog.ref("made/up-model"), /Unknown model/);
+  assert.throws(() => createModelCatalog({ provider: "litellm" }), /LITELLM_BASE_URL/);
+});
+
 test("the harness stores in WAL, answers on the faux model, and offers no bash or file tools", async () => {
   const t = tempDir();
   try {

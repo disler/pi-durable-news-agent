@@ -22,6 +22,8 @@ defaults:
   node: 24
   code_dir: ~/pi-durable-news-agent  # outside ~/Documents, so cron needs no Full Disk Access on macOS
   env_keys: [OPENROUTER_API_KEY, OPENAI_API_KEY, FIRECRAWL_API_KEY, DNA_CLIENT_TOKEN, DNA_CRON_TOKEN]
+  # With LiteLLM, copy its keys instead of OPENROUTER_API_KEY:
+  # env_keys: [DNA_PROVIDER, LITELLM_BASE_URL, LITELLM_API_KEY, TYPESAFE_API_KEY, OPENAI_API_KEY, FIRECRAWL_API_KEY, DNA_CLIENT_TOKEN, DNA_CRON_TOKEN]
   cron: "* * * * *"                  # the tick; the API's schedule (every 5 min by default, 1 to 60 or off) picks which ticks sweep
 
 devices:
