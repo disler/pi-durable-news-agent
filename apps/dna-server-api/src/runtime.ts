@@ -73,7 +73,13 @@ export async function openApp(config: Config, options: { log?: Logger } = {}): P
     provider: config.provider,
     installFaux: (models) => installScriptedFaux(models, fauxRules()),
     defaultModel: config.provider === "faux" ? undefined : config.model,
+    litellm:
+      config.provider === "litellm"
+        ? { baseUrl: config.litellmBaseUrl ?? "", models: config.litellmModels }
+        : undefined,
   });
+  // Fail at startup, not mid-sweep, when DNA_RESEARCH_MODEL is not served (e.g. left out of DNA_LITELLM_MODELS).
+  if (config.provider !== "faux") catalog.ref(config.researchModel);
   const judge = new Judge({
     decide: decideFor(config),
     store,
@@ -137,6 +143,20 @@ export async function openApp(config: Config, options: { log?: Logger } = {}): P
   const main = await harness.harness.root(ctx, {
     agent: { model: catalog.defaultModel, thinkingLevel: "low" },
   });
+  // A saved main model the catalog no longer serves (a route removed from DNA_LITELLM_MODELS, or an install that
+  // switched provider) would fail every turn: move the desk to DNA_MODEL instead.
+  const restored = (await main.agent(ctx)).model;
+  if (
+    catalog.provider !== "faux" &&
+    restored &&
+    !catalog.models.getModel(restored.provider, restored.modelId)
+  ) {
+    log.warn("model.reset", {
+      from: `${restored.provider}/${restored.modelId}`,
+      to: `${catalog.defaultModel.provider}/${catalog.defaultModel.modelId}`,
+    });
+    await main.configure({ model: catalog.defaultModel }, ctx);
+  }
   const mainModel = async () => {
     const agent = await main.agent(ctx);
     const id = agent.model?.modelId ?? catalog.defaultModel.modelId;
