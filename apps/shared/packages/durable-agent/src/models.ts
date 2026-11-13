@@ -1,7 +1,13 @@
 // The model catalog: Haiku 5.5 (default) plus 29 more models, through OpenRouter (default) or a LiteLLM proxy.
-// DNA_PROVIDER=litellm serves the same ids through LITELLM_BASE_URL; DNA_PROVIDER=faux swaps in a free deterministic
-// model with the same 1M window.
-import { envApiKeyAuth, type Api, type Model } from "@earendil-works/pi-ai";
+// DNA_PROVIDER=litellm serves the catalog through LITELLM_BASE_URL, renamed and narrowed by DNA_LITELLM_MODELS;
+// DNA_PROVIDER=faux swaps in a free deterministic model with the same 1M window.
+import {
+  envApiKeyAuth,
+  type Api,
+  type Model,
+  type ProviderStreams,
+  type StreamOptions,
+} from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
   createModels,
@@ -89,6 +95,56 @@ export type ModelProvider = "openrouter" | "litellm" | "faux";
 export interface LiteLLMOptions {
   /** The proxy's OpenAI-compatible URL, e.g. http://127.0.0.1:4000/v1. */
   baseUrl: string;
+  /** DNA_LITELLM_MODELS, see parseLiteLLMRoutes(). Unset: every catalog id, sent under its own name. */
+  models?: string;
+}
+
+export interface LiteLLMRoute {
+  /** The proxy's model_name for this catalog id. */
+  proxyName: string;
+  /** Replaces the catalog's context window when the proxy's deployment has a smaller one (GPT-6 on Azure: 272000). */
+  contextWindow?: number;
+}
+
+/**
+ * DNA_LITELLM_MODELS: comma-separated `catalogId=proxyName[@contextWindow]` entries; a bare `catalogId` keeps its own
+ * name. Only listed models are served. Returns undefined when unset, so every catalog id goes out under its own name.
+ */
+export function parseLiteLLMRoutes(spec: string | undefined): Map<string, LiteLLMRoute> | undefined {
+  if (!spec?.trim()) return undefined;
+  const routes = new Map<string, LiteLLMRoute>();
+  const dashed = (id: string) => id.replace(/\./g, "-");
+  for (const raw of spec.split(",")) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const at = entry.lastIndexOf("@");
+    const body = at < 0 ? entry : entry.slice(0, at);
+    const eq = body.indexOf("=");
+    const catalogId = (eq < 0 ? body : body.slice(0, eq)).trim();
+    const proxyName = (eq < 0 ? catalogId : body.slice(eq + 1)).trim();
+    if (!CATALOG.some((c) => c.id === catalogId)) {
+      const hint = CATALOG.find(
+        (c) => dashed(c.id) === dashed(catalogId) || dashed(c.id.split("/")[1]) === dashed(catalogId),
+      );
+      throw new Error(
+        `DNA_LITELLM_MODELS: ${catalogId} is not a catalog id${hint ? ` (did you mean ${hint.id}?)` : ""}. ` +
+          "Write catalogId=proxyName, e.g. anthropic/claude-haiku-5.5=claude-haiku-5-5",
+      );
+    }
+    if (!proxyName) throw new Error(`DNA_LITELLM_MODELS: ${entry} has no proxy model name after =`);
+    if (routes.has(catalogId)) throw new Error(`DNA_LITELLM_MODELS lists ${catalogId} twice`);
+    const route: LiteLLMRoute = { proxyName };
+    if (at >= 0) {
+      const tokens = Number(entry.slice(at + 1).trim());
+      if (!Number.isInteger(tokens) || tokens <= 0)
+        throw new Error(
+          `DNA_LITELLM_MODELS: ${entry} has an invalid context window; write @<tokens>, e.g. @272000`,
+        );
+      route.contextWindow = tokens;
+    }
+    routes.set(catalogId, route);
+  }
+  return routes.size ? routes : undefined;
 }
 
 export interface ModelCatalog {
@@ -144,22 +200,29 @@ export function createModelCatalog(options: {
   const missing = CATALOG.filter((c) => !known.some((m) => m.id === c.id)).map((c) => c.id);
   if (missing.length) throw new Error(`OpenRouter catalog is missing: ${missing.join(", ")}`);
   const id = options.provider;
-  if (id === "litellm") models.setProvider(liteLLMProvider(options.litellm, known));
+  // With DNA_LITELLM_MODELS set, only the routed models exist: the picker, DNA_MODEL and saved settings see no others.
+  const routes = id === "litellm" ? parseLiteLLMRoutes(options.litellm?.models) : undefined;
+  const served = routes ? CATALOG.filter((c) => routes.has(c.id)) : CATALOG;
+  if (id === "litellm") models.setProvider(liteLLMProvider(options.litellm, known, served, routes));
   else models.setProvider(openrouter);
   const list = () =>
-    CATALOG.map((c) => {
+    served.map((c) => {
       const m = known.find((x) => x.id === c.id)!;
       return {
         ...c,
         provider: id,
-        contextWindow: m.contextWindow,
+        contextWindow: routes?.get(c.id)?.contextWindow ?? m.contextWindow,
         reasoning: m.reasoning,
         cost: { input: m.cost.input, output: m.cost.output },
       };
     });
   const defaultId = options.defaultModel ?? DEFAULT_MODEL;
   const ref = (modelId: string): ModelRef => {
-    if (!CATALOG.some((c) => c.id === modelId))
+    if (routes && !routes.has(modelId))
+      throw new Error(
+        `Model ${modelId} is not in DNA_LITELLM_MODELS. Routed: ${[...routes.keys()].join(", ")}`,
+      );
+    if (!served.some((c) => c.id === modelId))
       throw new Error(`Unknown model ${modelId}. Pick one of the ${CATALOG.length} catalog models.`);
     return { provider: id, modelId };
   };
@@ -174,9 +237,10 @@ export function createModelCatalog(options: {
 }
 
 /**
- * The catalog served by a LiteLLM proxy over its OpenAI-compatible API. The proxy's model_name for each model is
- * its catalog id (anthropic/claude-haiku-5.5, ...), so the model picker, saved settings and DNA_MODEL keep working.
- * LITELLM_API_KEY is sent as the bearer key when set; a proxy without a master key needs none.
+ * The catalog served by a LiteLLM proxy over its OpenAI-compatible API. Model.id stays the catalog id everywhere
+ * (ModelRefs, saved settings, DNA_MODEL); a route's proxy name replaces it only in the request body. Without routes,
+ * the proxy's model_name for each model is its catalog id. LITELLM_API_KEY is sent as the bearer key when set; a proxy
+ * without a master key needs none.
  */
 function liteLLMProvider(
   options: LiteLLMOptions | undefined,
@@ -184,14 +248,17 @@ function liteLLMProvider(
     Model<Api>,
     "id" | "reasoning" | "input" | "cost" | "contextWindow" | "maxTokens"
   >[],
+  served: readonly CatalogEntry[],
+  routes: ReadonlyMap<string, LiteLLMRoute> | undefined,
 ): Provider<"openai-completions"> {
   const baseUrl = options?.baseUrl?.trim().replace(/\/+$/, "");
   if (!baseUrl)
     throw new Error(
       "DNA_PROVIDER=litellm needs LITELLM_BASE_URL, the proxy's OpenAI-compatible URL (e.g. http://127.0.0.1:4000/v1)",
     );
-  const catalogModels = CATALOG.map((c): Model<"openai-completions"> => {
+  const servedModels = served.map((c): Model<"openai-completions"> => {
     const m = known.find((x) => x.id === c.id)!;
+    const contextWindow = routes?.get(c.id)?.contextWindow ?? m.contextWindow;
     return {
       id: c.id,
       name: c.name,
@@ -201,13 +268,14 @@ function liteLLMProvider(
       reasoning: m.reasoning,
       input: m.input,
       cost: m.cost,
-      contextWindow: m.contextWindow,
-      maxTokens: m.maxTokens,
+      contextWindow,
+      maxTokens: Math.min(m.maxTokens, contextWindow),
       // LiteLLM does not accept OpenAI's `store` field for every backend.
       compat: { supportsStore: false },
     };
   });
   const keyed = !!process.env.LITELLM_API_KEY?.trim();
+  const streams = openAICompletionsApi();
   return createProvider({
     id: "litellm",
     name: "LiteLLM",
@@ -215,9 +283,35 @@ function liteLLMProvider(
     auth: {
       apiKey: keyed
         ? envApiKeyAuth("LiteLLM key", ["LITELLM_API_KEY"])
-        : { name: "LiteLLM (no key)", resolve: async () => ({ auth: {} }) },
+        : // The OpenAI client refuses an empty key; a keyless proxy ignores this placeholder.
+          { name: "LiteLLM (no key)", resolve: async () => ({ auth: { apiKey: "unused" } }) },
     },
-    models: catalogModels,
-    api: openAICompletionsApi(),
+    models: servedModels,
+    api: routes
+      ? withProxyNames(streams, new Map([...routes].map(([catalogId, r]) => [catalogId, r.proxyName])))
+      : streams,
   });
+}
+
+/** Sends each model's proxy name as the request's model, keeping Model.id the catalog id (pi-ai's Azure pattern). */
+function withProxyNames(
+  streams: ProviderStreams,
+  proxyNames: ReadonlyMap<string, string>,
+): ProviderStreams {
+  const rename = <T extends StreamOptions>(model: Model<Api>, options?: T): T | undefined => {
+    const proxyName = proxyNames.get(model.id);
+    if (!proxyName || proxyName === model.id) return options;
+    return {
+      ...options,
+      onPayload: async (payload: unknown, payloadModel: Model<Api>) => {
+        const params = { ...(payload as Record<string, unknown>), model: proxyName };
+        return (await options?.onPayload?.(params, payloadModel)) ?? params;
+      },
+    } as T;
+  };
+  return {
+    stream: (model, context, options) => streams.stream(model, context, rename(model, options)),
+    streamSimple: (model, context, options) =>
+      streams.streamSimple(model, context, rename(model, options)),
+  };
 }

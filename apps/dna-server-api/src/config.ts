@@ -17,6 +17,8 @@ export interface Config {
   provider: "openrouter" | "litellm" | "faux";
   /** The LiteLLM proxy's OpenAI-compatible URL; read when provider is litellm. */
   litellmBaseUrl?: string;
+  /** DNA_LITELLM_MODELS: catalogId=proxyName[@contextWindow] routes; unset serves every catalog id by its own name. */
+  litellmModels?: string;
   jevBackend: "auto" | "fixture" | "mock" | "openrouter" | "typesafe";
   /** auto | web | fallback | firecrawl | fixture; SearchService warns on anything else and searches the web. */
   searchMode: string;
@@ -71,6 +73,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Con
     promptsDir: join(APP_DIR, "prompt_engineering"),
     provider,
     litellmBaseUrl: env.LITELLM_BASE_URL?.trim() || undefined,
+    litellmModels: env.DNA_LITELLM_MODELS?.trim() || undefined,
     jevBackend:
       (env.JEV_BACKEND as Config["jevBackend"]) ?? (searchMode === "fixture" ? "fixture" : "auto"),
     searchMode,

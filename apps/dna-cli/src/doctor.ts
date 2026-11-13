@@ -11,12 +11,13 @@ const SHARED_KEYS = ["OPENAI_API_KEY", "FIRECRAWL_API_KEY", "DNA_CLIENT_TOKEN", 
 // DNA_PROVIDER=litellm serves the agents through a LiteLLM proxy; jev then needs its own key (TypeSafe or OpenRouter).
 const PROVIDER_KEYS = {
   openrouter: ["OPENROUTER_API_KEY"],
-  litellm: ["LITELLM_BASE_URL", "LITELLM_API_KEY"],
+  litellm: ["LITELLM_BASE_URL", "LITELLM_API_KEY", "DNA_LITELLM_MODELS"],
 } as const;
 const OPTIONAL: Record<string, string> = {
   OPENAI_API_KEY: "missing, cards without a source image show none",
   FIRECRAWL_API_KEY: "missing, search and page reads use the free engines",
   LITELLM_API_KEY: "missing, requests go to the proxy without a key",
+  DNA_LITELLM_MODELS: "missing, every catalog id is sent under its own name",
 };
 
 export async function doctor(

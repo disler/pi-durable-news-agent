@@ -40,26 +40,27 @@ just net down local                # stop the API, the UI and the tick
 
 ### Without OpenRouter: LiteLLM
 
-OpenRouter is the default. To serve the agents through your own [LiteLLM](https://docs.litellm.ai) proxy instead, set three values in `.env`:
+OpenRouter is the default. To serve the agents through your own [LiteLLM](https://docs.litellm.ai) proxy instead, set these in `.env`:
 
 ```bash
 DNA_PROVIDER=litellm
 LITELLM_BASE_URL=http://127.0.0.1:4000/v1   # the proxy's OpenAI-compatible URL
 LITELLM_API_KEY=sk-...                      # optional: the proxy's master key or a virtual key
+DNA_LITELLM_MODELS=anthropic/claude-haiku-5.5=claude-haiku-5-5,openai/gpt-6-sol=gpt-6-sol@272000
 TYPESAFE_API_KEY=...                        # jev, direct from TypeSafe (leave OPENROUTER_API_KEY empty)
 ```
 
-The proxy serves each model under its catalog id as `model_name`, so the model picker, saved settings and `DNA_MODEL` keep working. Map at least `anthropic/claude-haiku-5.5`: it is the default for the agent, the quick model and deep research. For example, in the proxy's `config.yaml`:
+`DNA_LITELLM_MODELS` maps catalog ids to the proxy's model names, as comma-separated `catalogId=proxyName` entries on one line:
 
-```yaml
-model_list:
-  - model_name: anthropic/claude-haiku-5.5
-    litellm_params:
-      model: anthropic/claude-haiku-5-5
-      api_key: os.environ/ANTHROPIC_API_KEY
-```
+- **Only listed models appear** in the model picker. Catalog ids stay the identity everywhere (saved settings, `DNA_MODEL`, the agent's saved chat), and the proxy name is sent only as the request's `model`.
+- **`@<tokens>` overrides the context window** when the proxy's deployment is smaller than the catalog says. GPT-6 on Azure is 272,000 tokens, not 1,050,000. The window drives compaction and caps `max_tokens`, so set it.
+- **A bare `catalogId`** keeps its own name.
+- **Map `anthropic/claude-haiku-5.5`,** or set `DNA_MODEL` and `DNA_RESEARCH_MODEL` to models you mapped. Haiku is the default for the agent, the quick model and deep research.
+- **Leave it unset** when the proxy already serves each model under its catalog id, for example through `model_group_alias` set by the proxy's admin.
 
-The agents call the proxy's Chat Completions API. Context windows, token limits and the prices behind the cost figures come from pi-ai's built-in catalog; reading it sends nothing to OpenRouter. jev is not a chat model, so it does not go through LiteLLM: `TYPESAFE_API_KEY` calls TypeSafe directly. `just cli run doctor` checks the keys for the provider you picked. Use a fresh `DNA_DATA_DIR` when you switch an existing install from one provider to the other, because the agent's saved chat remembers the provider of its model.
+If the agent's saved model is no longer served (a route was removed, or the install moved from OpenRouter), it resets to `DNA_MODEL` at startup. Don't move a model to another route in the middle of a chat: the chat keeps its history, and replies may carry reasoning blocks that the new backend rejects.
+
+The agents call the proxy's Chat Completions API. Token limits and the prices behind the cost figures come from pi-ai's built-in catalog; reading it sends nothing to OpenRouter. jev is not a chat model, so it does not go through LiteLLM: `TYPESAFE_API_KEY` calls TypeSafe directly. `just cli run doctor` checks the keys for the provider you picked.
 
 ---
 
